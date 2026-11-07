@@ -6,12 +6,15 @@ use std::sync::Mutex;
 /// How many samples the CPU history chart keeps.
 pub const HISTORY_MAX: usize = 40;
 
+/// How many interfaces the `net` chip and Network section show.
+pub const NET_VISIBLE_MAX: usize = 4;
+
 /// Percentage where usage rows and chips turn warning.
 pub const USAGE_WARN_PCT: f64 = 90.0;
 /// Percentage where usage rows and chips turn error.
 pub const USAGE_ERROR_PCT: f64 = 95.0;
 
-/// Derived RAM reading.
+/// A used/total share of some capacity (RAM or swap).
 #[derive(Clone, Debug, PartialEq)]
 pub struct RamInfo {
     pub pct: f64,
@@ -39,13 +42,105 @@ pub struct TempReading {
     pub peak_c: Option<f32>,
 }
 
+/// One interface's traffic, as seen by the last sampling tick.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NetSample {
+    pub name: String,
+    /// Bytes per second received, measured over the real tick length.
+    pub down_speed: f64,
+    pub up_speed: f64,
+    pub down_total: u64,
+    pub up_total: u64,
+}
+
+impl NetSample {
+    fn traffic(&self) -> f64 {
+        self.down_speed + self.up_speed
+    }
+}
+
+/// Raw counters for one interface between two refreshes.
+pub struct RawIface {
+    pub name: String,
+    pub down_delta: u64,
+    pub up_delta: u64,
+    pub down_total: u64,
+    pub up_total: u64,
+}
+
+/// One host-bound interface; empty names and loopback-like names are skipped.
+fn is_visible(name: &str) -> bool {
+    !name.is_empty() && name != "lo" && !name.starts_with("lo.")
+}
+
+/// Turns raw interface counters into visible `net` rows:
+/// loopback skipped, busiest interface first, capped to four.
+#[must_use]
+pub fn net_samples(ifaces: &[RawIface], elapsed_seconds: f64) -> Vec<NetSample> {
+    let elapsed = if elapsed_seconds.is_finite() && elapsed_seconds > 0.001 {
+        elapsed_seconds
+    } else {
+        0.001
+    };
+    let mut samples: Vec<NetSample> = ifaces
+        .iter()
+        .filter(|iface| is_visible(&iface.name))
+        .map(|iface| NetSample {
+            name: iface.name.clone(),
+            down_speed: iface.down_delta as f64 / elapsed,
+            up_speed: iface.up_delta as f64 / elapsed,
+            down_total: iface.down_total,
+            up_total: iface.up_total,
+        })
+        .collect();
+    samples.sort_by(|a, b| {
+        b.traffic()
+            .partial_cmp(&a.traffic())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    samples.truncate(NET_VISIBLE_MAX);
+    samples
+}
+
+/// Load average over 1/5/15 minutes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoadInfo {
+    pub one: f64,
+    pub five: f64,
+    pub fifteen: f64,
+}
+
+/// Static host facts, collected once when the sampling thread starts.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SystemInfo {
+    pub kernel: Option<String>,
+    pub os: Option<String>,
+    pub hostname: Option<String>,
+}
+
+/// One adapter node of the system.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GpuReading {
+    pub model: String,
+    pub usage: Option<f64>,
+    pub memory_used: Option<u64>,
+    pub memory_total: Option<u64>,
+}
+
 /// Everything one build pass renders from.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Snapshot {
     pub cpu_pct: Option<f64>,
     pub ram: Option<RamInfo>,
+    pub swap: Option<RamInfo>,
     pub disks: Vec<DiskUsage>,
     pub temps: Vec<TempReading>,
+    pub net: Vec<NetSample>,
+    pub load: Option<LoadInfo>,
+    pub uptime_seconds: Option<u64>,
+    pub cores: Vec<f64>,
+    pub gpus: Vec<GpuReading>,
+    pub system_info: Option<SystemInfo>,
     pub history: Vec<Option<f64>>,
 }
 
@@ -59,12 +154,18 @@ impl Shared {
     /// The readings to render right now.
     #[must_use]
     pub fn snapshot(&self) -> Snapshot {
-        self.snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Publishes a new set of readings.
     pub fn publish(&self, snapshot: Snapshot) {
-        *self.snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
+        *self
+            .snapshot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot;
     }
 }
 
@@ -76,9 +177,9 @@ pub fn push_history(history: &mut Vec<Option<f64>>, cpu_pct: Option<f64>) {
     history.push(cpu_pct);
 }
 
-/// RAM reading derived from a total/available pair.
+/// A used/total share derived from a total/available pair.
 #[must_use]
-pub fn ram_info(total: u64, available: u64) -> Option<RamInfo> {
+pub fn usage_info(total: u64, available: u64) -> Option<RamInfo> {
     if total == 0 {
         return None;
     }
@@ -149,11 +250,11 @@ mod tests {
 
     #[test]
     fn ram_pct_clamps_available() {
-        let info = ram_info(1000, 250).expect("info");
+        let info = usage_info(1000, 250).expect("info");
         assert_eq!(info.used, 750);
         assert!((info.pct - 75.0).abs() < f64::EPSILON);
-        assert_eq!(ram_info(0, 0), None);
-        assert_eq!(ram_info(1000, 1500).expect("clamped").used, 0);
+        assert_eq!(usage_info(0, 0), None);
+        assert_eq!(usage_info(1000, 1500).expect("clamped").used, 0);
     }
 
     #[test]
@@ -180,6 +281,67 @@ mod tests {
         assert_eq!(usage_tone(89.9), Tone::None);
         assert_eq!(usage_tone(90.0), Tone::Warning);
         assert_eq!(usage_tone(95.0), Tone::Error);
+    }
+
+    #[test]
+    fn net_samples_skip_loopback_rank_and_cap() {
+        let ifaces = |of: &[(u64, u64)]| {
+            of.iter()
+                .map(|(down, up)| RawIface {
+                    name: format!("i{}", down),
+                    down_delta: *down,
+                    up_delta: *up,
+                    down_total: *down,
+                    up_total: *up,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let samples = net_samples(
+            &ifaces(&[
+                (1_000, 0),
+                (0, 0),
+                (300, 4_300),
+                (500, 900),
+            ]),
+            2.0,
+        );
+        let names: Vec<&str> = samples.iter().map(|sample| sample.name.as_str()).collect();
+        // ranked by down+up speed: 2300, 700, 500, 0
+        assert_eq!(names, ["i300", "i500", "i1000", "i0"]);
+        assert!((samples[0].up_speed - 2_150.0).abs() < 0.001);
+
+        let idle = net_samples(&ifaces(&[(0, 0)]), 2.0);
+        assert_eq!(idle.len(), 1);
+        assert_eq!(idle[0].down_speed, 0.0);
+
+        let tiny = net_samples(&ifaces(&[]), 0.0);
+        assert!(tiny.is_empty());
+
+        let loopback = net_samples(&[RawIface {
+            name: "lo".to_owned(),
+            down_delta: 1,
+            up_delta: 1,
+            down_total: 1,
+            up_total: 1,
+        }], 1.0);
+        assert!(loopback.is_empty());
+    }
+
+    #[test]
+    fn net_samples_survive_a_zero_tick() {
+        let samples = net_samples(
+            &[RawIface {
+                name: "eth0".to_owned(),
+                down_delta: 100,
+                up_delta: 0,
+                down_total: 100,
+                up_total: 0,
+            }],
+            0.0,
+        );
+        assert!((samples[0].down_speed - 100.0) < f64::MAX);
+        assert!(samples[0].down_speed.is_finite());
     }
 
     #[test]

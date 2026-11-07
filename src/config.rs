@@ -1,15 +1,23 @@
 //! Panel config parsing. Options arrive as a JSON object validated here, not
 //! trusted; every violation becomes a message the panel shows in a chip tooltip.
+//!
+//! The public option key is `widgets` (compatibility with the panel config
+//! format); everything internal talks about chips.
 
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 
+/// One configurable bar indicator bound to a metric.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Chip {
     Cpu,
     Ram,
+    Swap,
     Disk,
     Temp,
+    Net,
+    Load,
+    Uptime,
 }
 
 impl Chip {
@@ -17,8 +25,12 @@ impl Chip {
         match value {
             "cpu" => Some(Self::Cpu),
             "ram" => Some(Self::Ram),
+            "swap" => Some(Self::Swap),
             "disk" => Some(Self::Disk),
             "temp" => Some(Self::Temp),
+            "net" => Some(Self::Net),
+            "load" => Some(Self::Load),
+            "uptime" => Some(Self::Uptime),
             _ => None,
         }
     }
@@ -28,16 +40,14 @@ impl Chip {
         match self {
             Self::Cpu => "cpu",
             Self::Ram => "ram",
+            Self::Swap => "swap",
             Self::Disk => "disk",
             Self::Temp => "temp",
+            Self::Net => "net",
+            Self::Load => "load",
+            Self::Uptime => "uptime",
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Side {
-    Ram,
-    Disk,
 }
 
 /// One applet instance's validated settings.
@@ -46,11 +56,13 @@ pub struct Config {
     /// Seconds between samples.
     pub interval_seconds: u64,
     /// Chips to draw on the panel, in the configured order.
-    pub widgets: Vec<Chip>,
+    pub chips: Vec<Chip>,
     /// Mount points shown in the storage section, in the configured order.
     pub mounts: Vec<String>,
     /// RAM chip and row style.
     pub ram_display: DisplayMode,
+    /// Swap chip and row style.
+    pub swap_display: DisplayMode,
     /// Disk chip and row style.
     pub disk_display: DisplayMode,
     /// Fallback warn threshold when a sensor has no critical limit.
@@ -65,9 +77,10 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             interval_seconds: 2,
-            widgets: vec![Chip::Cpu, Chip::Ram, Chip::Disk, Chip::Temp],
+            chips: vec![Chip::Cpu, Chip::Ram, Chip::Disk, Chip::Temp],
             mounts: vec!["/".to_owned()],
             ram_display: DisplayMode::Percent,
+            swap_display: DisplayMode::Percent,
             disk_display: DisplayMode::Percent,
             temp_warn_c: 75.0,
             temp_error_c: 85.0,
@@ -89,18 +102,20 @@ pub fn parse(options: &Value) -> Result<Config, Vec<String>> {
     let object = &object;
 
     let interval_seconds = parse_interval(object, &mut issues);
-    let widgets = parse_widgets(object, &mut issues);
+    let chips = parse_chips(object, &mut issues);
     let mounts = parse_mounts(object, &mut issues);
-    let ram_display = parse_display_mode(object, Side::Ram, &mut issues);
-    let disk_display = parse_display_mode(object, Side::Disk, &mut issues);
+    let ram_display = parse_display_mode(object, "ram-display", &mut issues);
+    let swap_display = parse_display_mode(object, "swap-display", &mut issues);
+    let disk_display = parse_display_mode(object, "disk-display", &mut issues);
     let (temp_warn_c, temp_error_c) = parse_thresholds(object, &mut issues);
 
     if issues.is_empty() {
         Ok(Config {
             interval_seconds,
-            widgets,
+            chips,
             mounts,
             ram_display,
+            swap_display,
             disk_display,
             temp_warn_c,
             temp_error_c,
@@ -127,18 +142,18 @@ fn parse_interval(object: &Map<String, Value>, issues: &mut Vec<String>) -> u64 
     2
 }
 
-fn parse_widgets(object: &Map<String, Value>, issues: &mut Vec<String>) -> Vec<Chip> {
+fn parse_chips(object: &Map<String, Value>, issues: &mut Vec<String>) -> Vec<Chip> {
     let key = "widgets";
     let Some(value) = object.get(key).filter(|value| !value.is_null()) else {
-        return Config::default().widgets;
+        return Config::default().chips;
     };
     let Some(items) = value.as_array() else {
         issues.push(format!("{key}: must be a list of widget names"));
-        return Config::default().widgets;
+        return Config::default().chips;
     };
     if items.is_empty() {
         issues.push(format!("{key}: must include at least one widget"));
-        return Config::default().widgets;
+        return Config::default().chips;
     }
 
     let chips: Vec<Option<Chip>> = items
@@ -151,14 +166,14 @@ fn parse_widgets(object: &Map<String, Value>, issues: &mut Vec<String>) -> Vec<C
         }
     }
     if chips.iter().any(Option::is_none) {
-        return Config::default().widgets;
+        return Config::default().chips;
     }
     let valid: Vec<Chip> = chips.into_iter().flatten().collect();
 
     let mut seen = HashSet::new();
     if valid.iter().any(|chip| !seen.insert(chip.name())) {
         issues.push(format!("{key}: must not repeat a widget"));
-        return Config::default().widgets;
+        return Config::default().chips;
     }
     valid
 }
@@ -213,11 +228,11 @@ fn parse_mounts(object: &Map<String, Value>, issues: &mut Vec<String>) -> Vec<St
     }
 }
 
-fn parse_display_mode(object: &Map<String, Value>, side: Side, issues: &mut Vec<String>) -> DisplayMode {
-    let key = match side {
-        Side::Ram => "ram-display",
-        Side::Disk => "disk-display",
-    };
+fn parse_display_mode(
+    object: &Map<String, Value>,
+    key: &str,
+    issues: &mut Vec<String>,
+) -> DisplayMode {
     match object.get(key) {
         None | Some(Value::Null) => DisplayMode::Percent,
         Some(Value::String(text)) => match text.as_str() {
@@ -257,8 +272,8 @@ fn parse_thresholds(object: &Map<String, Value>, issues: &mut Vec<String>) -> (f
     }
 }
 
-/// Reads a finite number from `key`, pushing an issue when it is absent-but-
-/// present-with-the-wrong-type. `null` and a missing key both read as optional.
+/// Reads a finite number from `key`, pushing an issue when it is present with
+/// the wrong type. `null` and a missing key both read as optional.
 fn optional_number(object: &Map<String, Value>, key: &str, issues: &mut Vec<String>) -> Option<f64> {
     match object.get(key).filter(|value| !value.is_null()) {
         None => None,
@@ -307,10 +322,25 @@ mod tests {
     }
 
     #[test]
-    fn widgets_validate_names_order_and_uniqueness() {
+    fn chips_validate_names_order_and_uniqueness() {
+        let config = parse(&json!({ "widgets": ["temp", "cpu"] })).expect("valid");
+        assert_eq!(config.chips, vec![Chip::Temp, Chip::Cpu]);
+        let config = parse(&json!({
+            "widgets": ["cpu", "ram", "swap", "disk", "temp", "net", "load", "uptime"],
+        }))
+        .expect("all eight names valid");
         assert_eq!(
-            parse(&json!({ "widgets": ["temp", "cpu"] })).expect("valid").widgets,
-            vec![Chip::Temp, Chip::Cpu]
+            config.chips,
+            vec![
+                Chip::Cpu,
+                Chip::Ram,
+                Chip::Swap,
+                Chip::Disk,
+                Chip::Temp,
+                Chip::Net,
+                Chip::Load,
+                Chip::Uptime,
+            ]
         );
         assert!(errors(json!({ "widgets": ["cpu", "frobnicate"] }))
             .contains(&"widgets.1: unknown widget name".to_owned()));
@@ -336,18 +366,27 @@ mod tests {
             .contains(&"mounts: must include at least one mount point".to_owned()));
         assert!(errors(json!({ "mounts": ["/a", "/a"] }))
             .contains(&"mounts: must not repeat a mount point".to_owned()));
-        assert!(errors(json!({ "mounts": ["/", "/", "/", "/", "/", "/", "/", "/", "/"] }))
-            .contains(&"mounts: must include at most 8 mount points".to_owned()));
+        assert!(errors(json!({
+            "mounts": ["/", "/", "/", "/", "/", "/", "/", "/", "/"],
+        }))
+        .contains(&"mounts: must include at most 8 mount points".to_owned()));
     }
 
     #[test]
     fn display_modes_accept_both_words_only() {
-        let config = parse(&json!({ "ram-display": "absolute", "disk-display": "absolute" }))
-            .expect("valid");
+        let config = parse(&json!({
+            "ram-display": "absolute",
+            "swap-display": "percent",
+            "disk-display": "absolute",
+        }))
+        .expect("valid");
         assert_eq!(config.ram_display, DisplayMode::Absolute);
+        assert_eq!(config.swap_display, DisplayMode::Percent);
         assert_eq!(config.disk_display, DisplayMode::Absolute);
         assert_eq!(errors(json!({ "ram-display": "pie" }))
             .as_slice(), ["ram-display: must be \"percent\" or \"absolute\""]);
+        assert_eq!(errors(json!({ "swap-display": "pie" }))
+            .as_slice(), ["swap-display: must be \"percent\" or \"absolute\""]);
         assert_eq!(errors(json!({ "disk-display": 5 }))
             .as_slice(), ["disk-display: must be \"percent\" or \"absolute\""]);
     }

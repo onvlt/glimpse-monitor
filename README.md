@@ -2,9 +2,10 @@
 
 Applet id: `lt.nyv.glimpse-monitor`.
 
-System monitor widgets for the Glimpse panel: per-widget chips (CPU, RAM, disk,
-temperature) and a popover with meter rows and a CPU history chart. Readings
-come from the `sysinfo` crate.
+System monitor widgets for the Glimpse panel: chips for CPU, RAM, swap, disk,
+temperature, network speed, load average and uptime, plus a popover with meter
+rows, a CPU history chart, per-core bars and system facts. Readings come from
+the `sysinfo` crate.
 
 Requires Cargo. Cargo fetches the `glimpse-sdk` and `sysinfo` crates on first
 build.
@@ -20,9 +21,10 @@ The justfile wraps the whole loop: `just dev`, `just test`, `just lint`, `just p
 | Option | Values | Default |
 | --- | --- | --- |
 | `interval` | seconds, `1..=60` | `2` |
-| `widgets` | list of `cpu`, `ram`, `disk`, `temp` | all four |
+| `widgets` | list of `cpu`, `ram`, `swap`, `disk`, `temp`, `net`, `load`, `uptime` | `["cpu", "ram", "disk", "temp"]` |
 | `mounts` | up to 8 absolute mount paths | `["/"]` |
 | `ram-display` | `percent` or `absolute` | `percent` |
+| `swap-display` | `percent` or `absolute` | `percent` |
 | `disk-display` | `percent` or `absolute` | `percent` |
 | `temp-warn` | °C limit, `20..=120` | `75` |
 | `temp-error` | °C limit, `20..=120` | `85` |
@@ -32,7 +34,7 @@ The justfile wraps the whole loop: `just dev`, `just test`, `just lint`, `just p
 left = ["lt.nyv.glimpse-monitor"]
 
 [applets."lt.nyv.glimpse-monitor"]
-options = { interval = 2, widgets = ["cpu", "ram", "disk", "temp"], mounts = ["/"], "ram-display" = "percent", "disk-display" = "percent", "temp-warn" = 75, "temp-error" = 85 }
+options = { interval = 2, widgets = ["cpu", "ram", "disk", "temp"], mounts = ["/"], "ram-display" = "percent", "swap-display" = "percent", "disk-display" = "percent", "temp-warn" = 75, "temp-error" = 85 }
 ```
 
 Add `left = ["lt.nyv.glimpse-monitor"]` to a panel's applet zone.

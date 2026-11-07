@@ -5,8 +5,10 @@ use crate::config::Config;
 use crate::snapshot::{self, Shared};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
-use sysinfo::{Components, Disks, MemoryRefreshKind, System};
+use std::time::{Duration, Instant};
+use sysinfo::{
+    Components, CpuRefreshKind, Disks, Gpus, MemoryRefreshKind, Networks, System,
+};
 
 /// Hands out the shared snapshot and starts the sampling thread.
 #[must_use]
@@ -35,8 +37,11 @@ fn sample_loop(waker: glimpse_sdk::Waker, config: Config, shared: Arc<Shared>) {
             return;
         }
     };
+    // System::new() starts with an empty CPU list; fill it so per-core usage
+    // has slots, then take the first global reading.
+    system.refresh_cpu_list(CpuRefreshKind::nothing().with_usage());
     system.refresh_cpu_usage();
-    system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+    system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram().with_swap());
 
     let mut disks = match Disks::new_with_refreshed_list() {
         Ok(disks) => disks,
@@ -52,16 +57,47 @@ fn sample_loop(waker: glimpse_sdk::Waker, config: Config, shared: Arc<Shared>) {
             return;
         }
     };
+    let mut networks = match Networks::new_with_refreshed_list() {
+        Ok(networks) => networks,
+        Err(error) => {
+            eprintln!("cannot list network interfaces: {error}");
+            return;
+        }
+    };
+    let mut gpus = match Gpus::new_with_refreshed_list() {
+        Ok(gpus) => gpus,
+        Err(error) => {
+            eprintln!("cannot list GPUs: {error}");
+            return;
+        }
+    };
+    let system_info = read_system_info();
 
     let mut history: Vec<Option<f64>> = Vec::new();
     loop {
+        let tick = Instant::now();
+
         system.refresh_cpu_usage();
-        system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram());
+        system.refresh_memory_specifics(MemoryRefreshKind::nothing().with_ram().with_swap());
 
         disks.refresh(false);
         components.refresh(false);
+        networks.refresh(false);
+        gpus.refresh(false);
 
-        let snapshot = read(&system, &disks, &components, &wanted, &history);
+        let snapshot = read(
+            &Sources {
+                system: &system,
+                disks: &disks,
+                components: &components,
+                networks: &networks,
+                gpus: &gpus,
+                system_info: &system_info,
+            },
+            &wanted,
+            tick.elapsed().as_secs_f64(),
+            &history,
+        );
         history = snapshot.history.clone();
         shared.publish(snapshot);
         waker.wake();
@@ -69,19 +105,59 @@ fn sample_loop(waker: glimpse_sdk::Waker, config: Config, shared: Arc<Shared>) {
     }
 }
 
+fn read_system_info() -> Option<snapshot::SystemInfo> {
+    let kernel = System::kernel_version().ok();
+    let os = System::long_os_version().ok();
+    let hostname = System::host_name().ok();
+    if kernel.is_none() && os.is_none() && hostname.is_none() {
+        None
+    } else {
+        Some(snapshot::SystemInfo {
+            kernel,
+            os,
+            hostname,
+        })
+    }
+}
+
+/// The sysinfo handles a tick reads from, borrowed as one group.
+struct Sources<'a> {
+    system: &'a System,
+    disks: &'a Disks,
+    components: &'a Components,
+    networks: &'a Networks,
+    gpus: &'a Gpus,
+    system_info: &'a Option<snapshot::SystemInfo>,
+}
+
 /// Turns the sysinfo state plus the previous history into the next snapshot.
 fn read(
-    system: &System,
-    disks: &Disks,
-    components: &Components,
+    sources: &Sources<'_>,
     wanted: &[PathBuf],
+    elapsed_seconds: f64,
     history: &[Option<f64>],
 ) -> snapshot::Snapshot {
+    let Sources {
+        system,
+        disks,
+        components,
+        networks,
+        gpus,
+        system_info,
+    } = sources;
+    let (system, disks, components, networks, gpus, system_info) =
+        (*system, *disks, *components, *networks, *gpus, *system_info);
     let cpu_pct = {
         let value = f64::from(system.global_cpu_usage());
         (0.0..=100.0).contains(&value).then_some(value)
     };
-    let ram = snapshot::ram_info(system.total_memory(), system.available_memory());
+    let cores: Vec<f64> = system
+        .cpus()
+        .iter()
+        .map(|cpu| f64::from(cpu.usage()).clamp(0.0, 100.0))
+        .collect();
+    let ram = snapshot::usage_info(system.total_memory(), system.available_memory());
+    let swap = snapshot::usage_info(system.total_swap(), system.free_swap());
 
     // Keep the configured mount order; skip mounts sysinfo does not list.
     let disks: Vec<snapshot::DiskUsage> = wanted
@@ -128,14 +204,56 @@ fn read(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    let raw_ifaces: Vec<snapshot::RawIface> = networks
+        .iter()
+        .map(|(name, data)| snapshot::RawIface {
+            name: name.to_string_lossy().trim().to_owned(),
+            down_delta: data.received(),
+            up_delta: data.transmitted(),
+            down_total: data.total_received(),
+            up_total: data.total_transmitted(),
+        })
+        .collect();
+    let net = snapshot::net_samples(&raw_ifaces, elapsed_seconds);
+
+    let load = System::load_average().ok().map(|load| snapshot::LoadInfo {
+        one: load.one,
+        five: load.five,
+        fifteen: load.fifteen,
+    });
+    let uptime_seconds = System::uptime().ok();
+
+    let gpus: Vec<snapshot::GpuReading> = gpus
+        .iter()
+        .map(|gpu| snapshot::GpuReading {
+            model: gpu
+                .model()
+                .or_else(|| gpu.vendor())
+                .unwrap_or("GPU")
+                .trim()
+                .to_owned(),
+            usage: gpu.usage().map(|value| f64::from(value).clamp(0.0, 100.0)),
+            memory_used: gpu.used_memory(),
+            memory_total: gpu.total_memory(),
+        })
+        .filter(|gpu| gpu.usage.is_some() || gpu.memory_total.unwrap_or(0) > 0)
+        .collect();
+
     let mut history = history.to_vec();
     snapshot::push_history(&mut history, cpu_pct);
 
     snapshot::Snapshot {
         cpu_pct,
         ram,
+        swap,
         disks,
         temps,
+        net,
+        load,
+        uptime_seconds,
+        cores,
+        gpus,
+        system_info: system_info.clone(),
         history,
     }
 }

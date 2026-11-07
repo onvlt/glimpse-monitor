@@ -154,6 +154,46 @@ pub fn display_temp(celsius: f32, unit: TempUnit) -> i64 {
     value.round() as i64
 }
 
+/// `1.2M`, `430k` — bytes per second without the unit, decimal sizes.
+#[must_use]
+pub fn speed_compact(bytes_per_s: f64) -> String {
+    let value = bytes_per_s.max(0.0);
+    if value >= 1_000_000.0 {
+        format!("{}M", fixed_trimmed(value / 1_000_000.0, 1))
+    } else if value >= 1_000.0 {
+        format!("{}k", fixed_trimmed(value / 1_000.0, 1))
+    } else {
+        format!("{}", value.round() as i64)
+    }
+}
+
+/// `1.2M/s`, `430k/s` — a byte rate in decimal sizes.
+#[must_use]
+pub fn speed_text(bytes_per_s: f64) -> String {
+    format!("{}/s", speed_compact(bytes_per_s))
+}
+
+/// `16d 3h`, `5h 12m`, `40m` — a duration split into its two coarsest units.
+#[must_use]
+pub fn uptime_text(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    if minutes < 60 {
+        format!("{minutes}m")
+    } else if minutes < 24 * 60 {
+        let hours = minutes / 60;
+        format!("{}h {}m", hours, minutes % 60)
+    } else {
+        let days = minutes / (24 * 60);
+        format!("{}d {}h", days, (minutes % (24 * 60)) / 60)
+    }
+}
+
+/// `0.58`, `1` — a load average value trimmed to two decimals.
+#[must_use]
+pub fn load_text(value: f64) -> String {
+    fixed_trimmed(value, 2)
+}
+
 /// `43°C`.
 #[must_use]
 pub fn format_temp(celsius: f32, unit: TempUnit) -> String {
@@ -256,6 +296,32 @@ mod tests {
         assert_eq!(resolve_temp_unit(Some("cs_CZ.UTF-8@euro")), TempUnit::Celsius);
         assert_eq!(resolve_temp_unit(Some("C.UTF-8")), TempUnit::Celsius);
         assert_eq!(resolve_temp_unit(None), TempUnit::Celsius);
+    }
+
+    #[test]
+    fn speeds_format_decimal() {
+        assert_eq!(speed_compact(0.0), "0");
+        assert_eq!(speed_compact(430.0), "430");
+        assert_eq!(speed_compact(1_230.0), "1.2k");
+        assert_eq!(speed_compact(430_000.0), "430k");
+        assert_eq!(speed_compact(1_230_000.0), "1.2M");
+        assert_eq!(speed_text(430_000.0), "430k/s");
+        assert_eq!(speed_text(-5.0), "0/s");
+    }
+
+    #[test]
+    fn uptime_splits_into_two_coarsest_units() {
+        assert_eq!(uptime_text(40 * 60), "40m");
+        assert_eq!(uptime_text(5 * 3600 + 12 * 60), "5h 12m");
+        assert_eq!(uptime_text(16 * 86400 + 3 * 3600 + 7 * 60), "16d 3h");
+        assert_eq!(uptime_text(0), "0m");
+    }
+
+    #[test]
+    fn load_values_trim_to_two_decimals() {
+        assert_eq!(load_text(0.5812), "0.58");
+        assert_eq!(load_text(1.0), "1");
+        assert_eq!(load_text(0.0), "0");
     }
 
     #[test]
