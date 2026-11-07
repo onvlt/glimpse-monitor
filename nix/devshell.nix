@@ -5,6 +5,7 @@
   clippy,
   rustfmt,
   rust-analyzer,
+  rustPlatform,
   just,
 }:
 mkShell {
@@ -16,4 +17,6 @@ mkShell {
     clippy
     rust-analyzer
   ];
+
+  env.RUST_SRC_PATH = "${rustPlatform.rustLibSrc}";
 }
