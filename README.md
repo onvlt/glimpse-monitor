@@ -16,6 +16,8 @@ applet with its options and env. Options edits update it; source edits rebuild a
 The justfile wraps the whole loop: `just dev`, `just test`, `just lint`, `just package`,
 `just install`.
 
+See [docs/architecture.md](docs/architecture.md) for how the code is structured.
+
 ## Options (panel.toml)
 
 | Option | Values | Default |
