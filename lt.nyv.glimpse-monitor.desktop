@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=glimpse-monitor
+Comment=System monitor widgets for Glimpse desktop panel
+Icon=application-x-addon-symbolic
+Exec=./glimpse-monitor
+NoDisplay=true
+Implements=me.aresa.Glimpse.Applet1
