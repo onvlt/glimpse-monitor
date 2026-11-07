@@ -45,8 +45,9 @@ Result<Config, Vec<String>>`. It collects _all_ errors in one pass (they are
   indicator bound to a metric_; `Widget` means any SDK tree node, so the two
   words never overlap.
 - **`format.rs`** — pure text/unit adapters: binary vs decimal byte sizing with
-  zero-trimming, `°C/°F`, speed rates, uptime humanization, load numbers, and
-  the locale→unit resolution. Nothing here knows about widgets.
+  zero-trimming, `°C/°F` conversion, speed rates, uptime humanization, load
+  numbers. The temperature scale itself is a config value (`temp-unit`) chosen
+  in `config.rs`, never derived from the locale.
 - **`snapshot.rs`** — the _data contract_ between sampler and renderer
   (`Snapshot`, `TempReading`, `NetSample`, …) plus the _policy_ that turns
   numbers into colors (`usage_tone`, `temp_tone` with the crit-scaled

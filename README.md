@@ -30,13 +30,14 @@ See [docs/architecture.md](docs/architecture.md) for how the code is structured.
 | `disk-display` | `percent` or `absolute` | `percent` |
 | `temp-warn` | °C limit, `20..=120` | `75` |
 | `temp-error` | °C limit, `20..=120` | `85` |
+| `temp-unit` | `celsius` or `fahrenheit` | `celsius` |
 
 ```toml
 [panels.…]
 left = ["lt.nyv.glimpse-monitor"]
 
 [applets."lt.nyv.glimpse-monitor"]
-options = { interval = 2, widgets = ["cpu", "ram", "disk", "temp"], mounts = ["/"], "ram-display" = "percent", "swap-display" = "percent", "disk-display" = "percent", "temp-warn" = 75, "temp-error" = 85 }
+options = { interval = 2, widgets = ["cpu", "ram", "disk", "temp"], mounts = ["/"], "ram-display" = "percent", "swap-display" = "percent", "disk-display" = "percent", "temp-unit" = "celsius", "temp-warn" = 75, "temp-error" = 85 }
 ```
 
 Add `left = ["lt.nyv.glimpse-monitor"]` to a panel's applet zone.

@@ -33,7 +33,6 @@ pub fn tree(
     };
     let empty = Snapshot::default();
     let snap = shared.map(Shared::snapshot).unwrap_or(empty);
-    let unit = format::resolve_temp_unit(format::locale_from_env().as_deref());
 
     let mut nodes: Vec<Widget<crate::app::Msg>> = config
         .chips
@@ -43,12 +42,12 @@ pub fn tree(
                 .key(chip.name())
                 .icon(chip_icon(*chip))
                 .severity(chip_severity(*chip, &snap, config))
-                .tooltip(chip_tooltip(*chip, &snap, config, unit))
-                .text(chip_text(*chip, &snap, config, unit))
+                .tooltip(chip_tooltip(*chip, &snap, config))
+                .text(chip_text(*chip, &snap, config))
                 .into()
         })
         .collect();
-    nodes.push(popover(snap, config, unit));
+    nodes.push(popover(snap, config));
     nodes
 }
 
@@ -68,14 +67,14 @@ fn chip_icon(chip: Chip) -> &'static str {
         .unwrap_or(POPOVER_ICON)
 }
 
-fn popover(snap: Snapshot, config: &Config, unit: TempUnit) -> Widget<crate::app::Msg> {
+fn popover(snap: Snapshot, config: &Config) -> Widget<crate::app::Msg> {
     let mut card = glimpse_sdk::popover()
         .title("System monitor")
         .icon(POPOVER_ICON)
         .child(processor_section(&snap))
         .child(memory_section(&snap, config))
         .child(storage_section(&snap, config))
-        .child(temperature_section(&snap, config, unit))
+        .child(temperature_section(&snap, config))
         .child(network_section(&snap));
     if !snap.gpus.is_empty() {
         card = card.child(gpu_section(&snap));
@@ -166,7 +165,8 @@ fn storage_section(snap: &Snapshot, config: &Config) -> Widget<crate::app::Msg> 
     section.into()
 }
 
-fn temperature_section(snap: &Snapshot, config: &Config, unit: TempUnit) -> Widget<crate::app::Msg> {
+fn temperature_section(snap: &Snapshot, config: &Config) -> Widget<crate::app::Msg> {
+    let unit = config.temp_unit;
     let mut section = section().title("Temperature");
     if snap.temps.is_empty() {
         section = section.child(
@@ -379,7 +379,7 @@ impl_tone_row!(MeterRow);
 
 /// Chip text: `12%`, `4.2/16G`, `43°`, `↓1.2M ↑430k`, `16d 3h`.
 #[must_use]
-pub fn chip_text(chip: Chip, snap: &Snapshot, config: &Config, unit: TempUnit) -> String {
+pub fn chip_text(chip: Chip, snap: &Snapshot, config: &Config) -> String {
     match chip {
         Chip::Cpu => snap.cpu_pct.map_or_else(|| "…".to_owned(), format::pct_text),
         Chip::Ram => capacity_chip(
@@ -405,7 +405,7 @@ pub fn chip_text(chip: Chip, snap: &Snapshot, config: &Config, unit: TempUnit) -
         ),
         Chip::Temp => snap.temps.first().map_or_else(
             || "…".to_owned(),
-            |reading| format!("{}°", format::display_temp(reading.celsius, unit)),
+            |reading| format!("{}°", format::display_temp(reading.celsius, config.temp_unit)),
         ),
         Chip::Net => snap.net.first().map_or_else(
             || "…".to_owned(),
@@ -447,7 +447,7 @@ fn capacity_chip(
 
 /// Fuller chip text for the tooltip.
 #[must_use]
-pub fn chip_tooltip(chip: Chip, snap: &Snapshot, config: &Config, unit: TempUnit) -> String {
+pub fn chip_tooltip(chip: Chip, snap: &Snapshot, config: &Config) -> String {
     match chip {
         Chip::Cpu => snap.cpu_pct.map_or_else(
             || "CPU …".to_owned(),
@@ -474,7 +474,7 @@ pub fn chip_tooltip(chip: Chip, snap: &Snapshot, config: &Config, unit: TempUnit
             |reading| {
                 format!(
                     "Temp {} — {}",
-                    format::format_temp_full(reading.celsius, unit),
+                    format::format_temp_full(reading.celsius, config.temp_unit),
                     reading.label
                 )
             },
@@ -611,15 +611,14 @@ mod tests {
     fn chips_render_short_values() {
         let snap = fixture();
         let config = Config::default();
-        let unit = TempUnit::Celsius;
-        assert_eq!(chip_text(Chip::Cpu, &snap, &config, unit), "12%");
-        assert_eq!(chip_text(Chip::Ram, &snap, &config, unit), "28%");
-        assert_eq!(chip_text(Chip::Swap, &snap, &config, unit), "25%");
-        assert_eq!(chip_text(Chip::Disk, &snap, &config, unit), "26%");
-        assert_eq!(chip_text(Chip::Temp, &snap, &config, unit), "43°");
-        assert_eq!(chip_text(Chip::Net, &snap, &config, unit), "↓1.2M ↑430k");
-        assert_eq!(chip_text(Chip::Load, &snap, &config, unit), "0.58");
-        assert_eq!(chip_text(Chip::Uptime, &snap, &config, unit), "16d 3h");
+        assert_eq!(chip_text(Chip::Cpu, &snap, &config), "12%");
+        assert_eq!(chip_text(Chip::Ram, &snap, &config), "28%");
+        assert_eq!(chip_text(Chip::Swap, &snap, &config), "25%");
+        assert_eq!(chip_text(Chip::Disk, &snap, &config), "26%");
+        assert_eq!(chip_text(Chip::Temp, &snap, &config), "43°");
+        assert_eq!(chip_text(Chip::Net, &snap, &config), "↓1.2M ↑430k");
+        assert_eq!(chip_text(Chip::Load, &snap, &config), "0.58");
+        assert_eq!(chip_text(Chip::Uptime, &snap, &config), "16d 3h");
         for chip in [
             Chip::Cpu,
             Chip::Ram,
@@ -630,8 +629,22 @@ mod tests {
             Chip::Load,
             Chip::Uptime,
         ] {
-            assert_eq!(chip_text(chip, &Snapshot::default(), &config, unit), "…");
+            assert_eq!(chip_text(chip, &Snapshot::default(), &config), "…");
         }
+    }
+
+    #[test]
+    fn fahrenheit_config_rescales_the_temp_chip() {
+        let snap = fixture();
+        let config = Config {
+            temp_unit: TempUnit::Fahrenheit,
+            ..Config::default()
+        };
+        assert_eq!(chip_text(Chip::Temp, &snap, &config), "109°");
+        assert_eq!(
+            chip_tooltip(Chip::Temp, &snap, &config),
+            "Temp 109 °F — Package id 0"
+        );
     }
 
     #[test]
@@ -643,16 +656,15 @@ mod tests {
             disk_display: DisplayMode::Absolute,
             ..Config::default()
         };
-        let unit = TempUnit::Celsius;
-        assert_eq!(chip_text(Chip::Ram, &snap, &config, unit), "4.5G/16G");
-        assert_eq!(chip_text(Chip::Swap, &snap, &config, unit), "2G/8G");
-        assert_eq!(chip_text(Chip::Disk, &snap, &config, unit), "4.5G/17.2G");
+        assert_eq!(chip_text(Chip::Ram, &snap, &config), "4.5G/16G");
+        assert_eq!(chip_text(Chip::Swap, &snap, &config), "2G/8G");
+        assert_eq!(chip_text(Chip::Disk, &snap, &config), "4.5G/17.2G");
         assert_eq!(
-            chip_tooltip(Chip::Disk, &snap, &config, unit),
+            chip_tooltip(Chip::Disk, &snap, &config),
             "Disk 4.51 GB of 17.18 GB"
         );
         assert_eq!(
-            chip_tooltip(Chip::Swap, &snap, &config, unit),
+            chip_tooltip(Chip::Swap, &snap, &config),
             "Swap 2 GiB of 8 GiB"
         );
     }
@@ -661,24 +673,23 @@ mod tests {
     fn tooltips_fully_describe_the_reading() {
         let snap = fixture();
         let config = Config::default();
-        let unit = TempUnit::Celsius;
-        assert_eq!(chip_tooltip(Chip::Cpu, &snap, &config, unit), "CPU 12%");
-        assert_eq!(chip_tooltip(Chip::Ram, &snap, &config, unit), "RAM 28%");
-        assert_eq!(chip_tooltip(Chip::Swap, &snap, &config, unit), "Swap 25%");
-        assert_eq!(chip_tooltip(Chip::Disk, &snap, &config, unit), "Disk 26%");
+        assert_eq!(chip_tooltip(Chip::Cpu, &snap, &config), "CPU 12%");
+        assert_eq!(chip_tooltip(Chip::Ram, &snap, &config), "RAM 28%");
+        assert_eq!(chip_tooltip(Chip::Swap, &snap, &config), "Swap 25%");
+        assert_eq!(chip_tooltip(Chip::Disk, &snap, &config), "Disk 26%");
         assert_eq!(
-            chip_tooltip(Chip::Temp, &snap, &config, unit),
+            chip_tooltip(Chip::Temp, &snap, &config),
             "Temp 43 °C — Package id 0"
         );
         assert_eq!(
-            chip_tooltip(Chip::Net, &snap, &config, unit),
+            chip_tooltip(Chip::Net, &snap, &config),
             "Down 1.2M/s, Up 430k/s — eno1"
         );
         assert_eq!(
-            chip_tooltip(Chip::Load, &snap, &config, unit),
+            chip_tooltip(Chip::Load, &snap, &config),
             "Load 0.58 · 0.42 · 0.38 (1/5/15 min)"
         );
-        assert_eq!(chip_tooltip(Chip::Uptime, &snap, &config, unit), "Uptime 16d 3h");
+        assert_eq!(chip_tooltip(Chip::Uptime, &snap, &config), "Uptime 16d 3h");
     }
 
     #[test]

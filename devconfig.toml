@@ -1,1 +1,1 @@
-options = { interval = 2, widgets = ["cpu", "ram", "disk", "temp"], mounts = ["/"], "ram-display" = "percent", "swap-display" = "percent", "disk-display" = "percent" }
+options = { interval = 2, widgets = ["cpu", "ram", "disk", "temp"], mounts = ["/"], "ram-display" = "percent", "swap-display" = "percent", "disk-display" = "percent", "temp-unit" = "celsius" }

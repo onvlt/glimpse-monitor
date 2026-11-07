@@ -69,9 +69,11 @@ pub struct Config {
     pub temp_warn_c: f32,
     /// Fallback error threshold when a sensor has no critical limit.
     pub temp_error_c: f32,
+    /// Temperature scale used by the chip and rows.
+    pub temp_unit: TempUnit,
 }
 
-use crate::format::DisplayMode;
+use crate::format::{DisplayMode, TempUnit};
 
 impl Default for Config {
     fn default() -> Self {
@@ -84,6 +86,7 @@ impl Default for Config {
             disk_display: DisplayMode::Percent,
             temp_warn_c: 75.0,
             temp_error_c: 85.0,
+            temp_unit: TempUnit::Celsius,
         }
     }
 }
@@ -108,6 +111,7 @@ pub fn parse(options: &Value) -> Result<Config, Vec<String>> {
     let swap_display = parse_display_mode(object, "swap-display", &mut issues);
     let disk_display = parse_display_mode(object, "disk-display", &mut issues);
     let (temp_warn_c, temp_error_c) = parse_thresholds(object, &mut issues);
+    let temp_unit = parse_temp_unit(object, &mut issues);
 
     if issues.is_empty() {
         Ok(Config {
@@ -119,6 +123,7 @@ pub fn parse(options: &Value) -> Result<Config, Vec<String>> {
             disk_display,
             temp_warn_c,
             temp_error_c,
+            temp_unit,
         })
     } else {
         Err(issues)
@@ -246,6 +251,25 @@ fn parse_display_mode(
         Some(_) => {
             issues.push(format!("{key}: must be \"percent\" or \"absolute\""));
             DisplayMode::Percent
+        }
+    }
+}
+
+fn parse_temp_unit(object: &Map<String, Value>, issues: &mut Vec<String>) -> TempUnit {
+    let key = "temp-unit";
+    match object.get(key) {
+        None | Some(Value::Null) => TempUnit::Celsius,
+        Some(Value::String(text)) => match text.as_str() {
+            "celsius" => TempUnit::Celsius,
+            "fahrenheit" => TempUnit::Fahrenheit,
+            _ => {
+                issues.push(format!("{key}: must be \"celsius\" or \"fahrenheit\""));
+                TempUnit::Celsius
+            }
+        },
+        Some(_) => {
+            issues.push(format!("{key}: must be \"celsius\" or \"fahrenheit\""));
+            TempUnit::Celsius
         }
     }
 }
@@ -410,6 +434,24 @@ mod tests {
     #[test]
     fn every_problem_is_reported_at_once() {
         let issues = errors(json!({ "interval": 0, "ram-display": "pie" }));
+        assert_eq!(issues.len(), 2);
+    }
+
+    #[test]
+    fn temp_unit_defaults_to_celsius_and_accepts_both_words() {
+        let config = parse(&json!({})).expect("valid");
+        assert_eq!(config.temp_unit, TempUnit::Celsius);
+        let config = parse(&json!({ "temp-unit": "fahrenheit" })).expect("valid");
+        assert_eq!(config.temp_unit, TempUnit::Fahrenheit);
+        assert_eq!(
+            errors(json!({ "temp-unit": "kelvin" })),
+            ["temp-unit: must be \"celsius\" or \"fahrenheit\""]
+        );
+        assert_eq!(
+            errors(json!({ "temp-unit": 12 })),
+            ["temp-unit: must be \"celsius\" or \"fahrenheit\""]
+        );
+        let issues = errors(json!({ "temp-unit": "kelvin", "interval": 0 }));
         assert_eq!(issues.len(), 2);
     }
 }

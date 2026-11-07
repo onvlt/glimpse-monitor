@@ -37,36 +37,6 @@ impl TempUnit {
     }
 }
 
-/// Fahrenheit where the locale's customary measurement system is Fahrenheit,
-/// Celsius otherwise. Mirrors locales with `LC_MEASUREMENT=en_US`.
-const FAHRENHEIT_REGIONS: [&str; 9] = ["US", "AS", "FM", "GU", "KY", "LR", "MH", "PW", "VI"];
-
-/// Locale string from the environment, `LC_ALL` over `LC_MEASUREMENT` over `LANG`.
-#[must_use]
-pub fn locale_from_env() -> Option<String> {
-    ["LC_ALL", "LC_MEASUREMENT", "LANG"]
-        .iter()
-        .find_map(|key| std::env::var(key).ok().filter(|value| !value.is_empty()))
-}
-
-/// Resolves the temperature unit for a `LC_*`-style locale string.
-///
-/// The region is the last two-letter component, so `en_US.UTF-8` yields `US`.
-#[must_use]
-pub fn resolve_temp_unit(locale: Option<&str>) -> TempUnit {
-    let region = locale.and_then(|text| {
-        text.split(['-', '_', '.', '@'])
-            .rev()
-            .find_map(|part| {
-                (part.len() == 2 && part.chars().all(|c| c.is_ascii_alphabetic()))
-                    .then(|| part.to_ascii_uppercase())
-            })
-    });
-    region
-        .filter(|value| FAHRENHEIT_REGIONS.contains(&value.as_str()))
-        .map_or(TempUnit::Celsius, |_| TempUnit::Fahrenheit)
-}
-
 /// Formats a number with fixed decimals and drops trailing zeros,
 /// so `4.20` becomes `4.2` and `16.00` becomes `16`.
 #[must_use]
@@ -285,17 +255,6 @@ mod tests {
         assert_eq!(format_temp(43.2, TempUnit::Celsius), "43°C");
         assert_eq!(format_temp(43.2, TempUnit::Fahrenheit), "110°F");
         assert_eq!(format_temp_full(43.44, TempUnit::Celsius), "43.4 °C");
-    }
-
-    #[test]
-    fn locale_regions_pick_the_unit() {
-        assert_eq!(resolve_temp_unit(Some("en_US.UTF-8")), TempUnit::Fahrenheit);
-        assert_eq!(resolve_temp_unit(Some("es-US")), TempUnit::Fahrenheit);
-        assert_eq!(resolve_temp_unit(Some("de_DE.UTF-8")), TempUnit::Celsius);
-        assert_eq!(resolve_temp_unit(Some("en")), TempUnit::Celsius);
-        assert_eq!(resolve_temp_unit(Some("cs_CZ.UTF-8@euro")), TempUnit::Celsius);
-        assert_eq!(resolve_temp_unit(Some("C.UTF-8")), TempUnit::Celsius);
-        assert_eq!(resolve_temp_unit(None), TempUnit::Celsius);
     }
 
     #[test]
