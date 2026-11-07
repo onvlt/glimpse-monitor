@@ -1,1 +1,1 @@
-options = {}
+options = { interval = 2, widgets = ["cpu", "ram", "disk", "temp"], mounts = ["/"], "ram-display" = "percent", "disk-display" = "percent" }

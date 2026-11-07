@@ -25,6 +25,7 @@ rustPlatform.buildRustPackage {
         "Cargo.toml"
         "Cargo.lock"
         "src"
+        "data"
         "${appletId}.desktop"
       ];
   };
@@ -36,6 +37,11 @@ rustPlatform.buildRustPackage {
     install -Dm644 "${appletId}.desktop" "$out/share/applications/${appletId}.desktop"
     substituteInPlace "$out/share/applications/${appletId}.desktop" \
       --replace-fail "Exec=./${pname}" "Exec=$out/bin/${pname}"
+
+    mkdir -p "$out/share/icons/hicolor/scalable/status"
+    for icon in data/icons/*; do
+      install -m0644 "$icon" "$out/share/icons/hicolor/scalable/status/${pname}-$(basename "$icon")"
+    done
   '';
 
   meta = {
